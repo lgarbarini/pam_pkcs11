@@ -520,15 +520,56 @@ int verify_signature(X509 * x509, unsigned char *data, int data_length,
 
   if (EVP_PKEY_base_id(pubkey) == EVP_PKEY_EC) {
     rs_len = *signature_length / 2;
-    ec_sig = ECDSA_SIG_new();
-    BN_bin2bn(*signature, rs_len, ECDSA_SIG_get0_r(ec_sig));
-    BN_bin2bn(*signature + rs_len, rs_len, ECDSA_SIG_get0_s(ec_sig));
-    *signature_length = i2d_ECDSA_SIG(ec_sig, &p);
-    free(*signature);
-    *signature = malloc(*signature_length);
-    p = *signature;
-    *signature_length = i2d_ECDSA_SIG(ec_sig, &p);
-    ECDSA_SIG_free(ec_sig);
+    unsigned char* old = *signature;
+
+    int extend_r = 0;
+    int extend_s = 0;
+
+    // first byte of (vr) would be read as negative number, remember to pad
+    if ((unsigned char)*old > 127) {
+      extend_r = 1;
+    }
+    // first byte of (vs) would be read as negative number, remember to pad
+    if (((unsigned char)*(old + rs_len)) > 127) {
+      extend_s = 1;
+    }
+
+    // new signature length is 0x30 b1 0x02 b2 (vr) 0x02 b3 (vs), plus padding 
+    *signature_length = (rs_len * 2) + 6 + extend_r + extend_s;
+
+    // use calloc to handle 0 padding
+    *signature = calloc(*signature_length, sizeof(char*));
+    void * ptr = *signature;
+    DBG1("length is: %d",(*signature_length));
+    memset(ptr, 0x30, 1);
+    
+    // single byte length of all fields after this one
+    ptr += 1;
+    memset(ptr, *signature_length - 2, 1);
+
+    // marker
+    ptr += 1;
+    memset(ptr, 0x02, 1);
+
+    // length of (vr), include padding (if required)
+    ptr += 1;
+    memset(ptr, rs_len + extend_r, 1);
+
+    // vr (padding handled)
+    ptr += 1 + extend_r;
+    memcpy(ptr, old, rs_len);
+    
+    // marker
+    ptr += rs_len;
+    memset(ptr, 0x02, 1);
+    
+    // length of (vs), include padding (if required)
+    ptr += 1;
+    memset(ptr, rs_len + extend_s, 1);
+    
+    // vs (padding handled)
+    ptr += 1 + extend_s;
+    memcpy(ptr, old+rs_len, rs_len);
   }
 
   md_ctx = EVP_MD_CTX_new();
